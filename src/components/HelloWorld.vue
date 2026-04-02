@@ -1,361 +1,189 @@
 <script setup>
-import Stats from 'stats.js';
-import * as dat from 'three/examples/jsm/libs/lil-gui.module.min.js';
-import * as THREE from 'three';
-import { ref,onMounted } from 'vue';
-import {
-	acceleratedRaycast, computeBoundsTree, disposeBoundsTree,
-	CENTER, SAH, AVERAGE, BVHHelper,
-} from 'three-mesh-bvh';
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
+import * as THREE from "three";
+import { AmbientLight, DirectionalLight } from "three";
+import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import Stats from "three/examples/jsm/libs/stats.module.js";
+import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { HDRLoader } from "three/examples/jsm/loaders/HDRLoader.js";
+import { KTX2Loader } from "three/examples/jsm/loaders/KTX2Loader.js";
+import { onMounted, ref } from "vue";
+import { MeshSurfaceSampler } from 'three/examples/jsm/math/MeshSurfaceSampler.js' 
+import { gsap } from "gsap";
+import { acceleratedRaycast, computeBoundsTree, disposeBoundsTree } from 'three-mesh-bvh';
 
 THREE.Mesh.prototype.raycast = acceleratedRaycast;
 THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
-THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
 
-const bgColor = 0x131619;
-const pointDist = 25;
+const cont = ref(null);
 
-const params = {
-	// Raycasters
-	raycasterCount: 150,
-	raycasterSpeed: 1,
-	raycasterNear: 0,
-	raycasterFar: pointDist,
+let camera, renderer, controls, model, pointsGeometry;
+const positions = [];
+const colors = [];
+const progresses = [];
+const tempPosition = new THREE.Vector3();
+const tempColor = new THREE.Color();
+const colorA = new THREE.Color(0x2a43ff);
+const colorB = new THREE.Color(0xff0000);
+let sampledAny = false;
 
-	// Mesh
-	splitStrategy: CENTER,
-	meshCount: 1,
-	meshSpeed: 1,
-	useBoundsTree: true,
-	displayBVH: false,
-	displayDepth: 10,
-	displayParents: false,
-};
+const scene = new THREE.Scene();
 
-let renderer, scene, stats, camera;
-let geometry, material, bvhHelper, containerObj, mesh;
-const knots = [];
-const rayCasterObjects = [];
+onMounted(() => {
+  init();
+});
 
-const raycaster = new THREE.Raycaster();
-raycaster.firstHitOnly = true;
+async function init() {
+  // ================= renderer =================
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.shadowMap.enabled = true;
+  cont.value.appendChild(renderer.domElement);
 
-const sphere = new THREE.SphereGeometry( 0.25, 20, 20 );
-const cylinder = new THREE.CylinderGeometry( 0.01, 0.01 );
+  // ================= camera =================
+  camera = new THREE.PerspectiveCamera(
+    70,
+    window.innerWidth / window.innerHeight,
+    0.05, 
+    1000
+   );
+  camera.position.set(10, 20, 20);
+  camera.lookAt(0,0,0)
 
-const loader = new GLTFLoader();
-// 创建 Draco Loader
-const dracoLoader = new DRACOLoader();
-// 设置解压路径（可以用 Three.js 官方提供的 JS 解码器）
-dracoLoader.setDecoderPath( "https://www.gstatic.com/draco/versioned/decoders/1.5.6/"); // 放在 public/draco/ 下
-loader.setDRACOLoader(dracoLoader);
+  // ================= controls =================
+  controls = new OrbitControls(camera,renderer.domElement);
+  controls.enableDamping = true;
 
-let lastFrameTime = null;
+  // ================= light =================
+  const light = new DirectionalLight(0xffffff, 0.6);
+  light.position.set(-0.13, 2.51, 2.27);
+  light.castShadow = true;
+  scene.add(light);
 
-init();
-updateFromOptions();
+  scene.add(new AmbientLight(0xffffff, 3.0));
 
-function init() {
+  new HDRLoader().load("./hdr/indoor.hdr", (tex) => {
+    tex.mapping = THREE.EquirectangularReflectionMapping;
+    scene.background = tex;
+    scene.environment = tex;
+  });
 
-	// Renderer
-	renderer = new THREE.WebGLRenderer( { antialias: true } );
-	renderer.setPixelRatio( window.devicePixelRatio );
-	renderer.setSize( window.innerWidth, window.innerHeight );
-	renderer.setClearColor( bgColor, 1 );
-	renderer.setAnimationLoop( render );
-	document.body.appendChild( renderer.domElement );
 
-	// Scene
-	scene = new THREE.Scene();
-	scene.fog = new THREE.Fog( bgColor, 40, 80 );
+  const gltfLoader = new GLTFLoader();
+  const dracoLoader = new DRACOLoader();
+  dracoLoader.setDecoderPath(
+    "https://unpkg.com/three@0.180.0/examples/jsm/libs/draco/"
+  );
+  gltfLoader.setDRACOLoader(dracoLoader);
 
-	// Lights
-	const directionalLight = new THREE.DirectionalLight( 0xffffff, 0.5 );
-	directionalLight.position.set( 1, 1, 1 );
+  const ktx2Loader = new KTX2Loader();
+  ktx2Loader.setTranscoderPath(
+    "https://unpkg.com/three@0.180.0/examples/jsm/libs/basis/"
+  );
+  ktx2Loader.detectSupport(renderer);
+  gltfLoader.setKTX2Loader(ktx2Loader);
 
-	const ambientLight = new THREE.AmbientLight( 0xffffff, 0.4 );
-	scene.add( directionalLight, ambientLight );
+ gltfLoader.load("./models/su7.glb", (gltf) => {
+  model = gltf.scene;
+  model.visible = false;
+  scene.add(model);
 
-  //model
-  loader.load( './models/su7.glb', gltf => {
-    const model = gltf.scene;
-    mesh = model.children[0];
-    containerObj.add( model );
+    // 居中
+  // const box = new THREE.Box3().setFromObject(model);
+  // const center = box.getCenter(new THREE.Vector3());
+  // model.position.sub(center);
 
-    // 做BVH加速
-    model.traverse((child)=>{
-      if(child.isMesh) {
-        child.geometry.computeBoundsTree();
-      }
-    })
-  })
+  model.updateMatrixWorld(true,true);
 
-	// Geometry
-	// const radius = 1;
-	// const tube = 0.4;
-	// const tubularSegments = 400;
-	// const radialSegments = 100;
+  // ✅ 在这里再做 traverse
+  model.traverse((child) => {
+    if (child.isMesh && child.geometry) {
+       child.geometry.computeBoundsTree();
+    } 
+    // 真正得网格必须是Mesh，geometry.getAttribute("position")必须有顶点属性
+    if (!child.isMesh || !child.geometry.getAttribute("position")) {
+      return;
+    }
 
-	// containerObj = new THREE.Object3D();
-	// geometry = new THREE.TorusKnotGeometry( radius, tube, tubularSegments, radialSegments );
-	// material = new THREE.MeshPhongMaterial( { color: 0xE91E63 } );
-	containerObj.scale.setScalar( 10 );
-	containerObj.rotation.x = containerObj.rotation.y = 10.989999999999943;
-	scene.add( containerObj );
+    // 在模型表面随机取点（不是顶点，而是表面均匀分布），build会计算每个三角面的面积，让采样更均匀（面积大的面被选中的概率更高）
+    const sampler = new MeshSurfaceSampler(child).build();
+    const sampleCount = 3000;
 
-	// Camera
-	camera = new THREE.PerspectiveCamera( 75, window.innerWidth / window.innerHeight, 0.1, 100 );
-	camera.position.z = 60;
+    for (let i = 0; i < sampleCount; i++) {
+      sampler.sample(tempPosition); // 随机在模型表面取一个点，存到tempPosition里
+      child.localToWorld(tempPosition); // 把局部坐标转换到世界坐标
+      positions.push(tempPosition.x, tempPosition.y, tempPosition.z); // 把点的位置存进数组
 
-	// Stats
-	stats = new Stats();
-	document.body.appendChild( stats.dom );
+      // progress = 车头到车位方向归一化，假设x轴式车头方向
+      const minX = -2;
+      const maxX = 2;
+      const progress = THREE.MathUtils.clamp((tempPosition.x - minX) / (maxX - minX), 0, 1); 
 
-	// GUI
-	const gui = new dat.GUI();
-	const rcFolder = gui.addFolder( 'Raycasters' );
-	rcFolder.add( params, 'raycasterCount', 1, 1000, 1 ).onChange( updateFromOptions );
-	rcFolder.add( params, 'raycasterSpeed', 0, 20 );
-	rcFolder.add( params, 'raycasterNear', 0, pointDist ).onChange( updateFromOptions );
-	rcFolder.add( params, 'raycasterFar', 0, pointDist ).onChange( updateFromOptions );
-	rcFolder.open();
+      const t = THREE.MathUtils.clamp((tempPosition.x + 1.5) / 3, 0, 1);
+      // tempColor.copy(colorA).lerp(colorB, t);
+      // tempColor.setHSL(0.6 - 0.6 * t, 1.0, 0.5); // 根据点的位置计算颜色，这里是从蓝色到红色的渐变
+      // colors.push(tempColor.r, tempColor.g, tempColor.b);
+      colors.push(0.36, 0.149, 0.68);
+      progress.push(progress);
+    }
 
-	const meshFolder = gui.addFolder( 'Mesh' );
-	meshFolder.add( params, 'useBoundsTree' ).onChange( updateFromOptions );
-	meshFolder.add( params, 'splitStrategy', { CENTER, SAH, AVERAGE } ).onChange( updateFromOptions );
-	meshFolder.add( params, 'meshCount', 1, 300, 1 ).onChange( updateFromOptions );
-	meshFolder.add( params, 'meshSpeed', 0, 20 );
-	meshFolder.add( params, 'displayBVH' ).onChange( updateFromOptions );
-	meshFolder.add( params, 'displayParents' ).onChange( v => {
+    sampledAny = true;
+  });
 
-		if ( bvhHelper ) {
+  if (!sampledAny) {
+    console.warn("No mesh found for sampling.");
+    return;
+  }
 
-			bvhHelper.displayParents = v;
-			bvhHelper.update();
+  let t = 0; // 0 ~ 1 动画进度
+gsap.to({ val: 0 }, {
+  val: 1,
+  duration: 5,
+  onUpdate: function() {
+    t = this.targets()[0].val;
+  }
+});
 
-		}
+  // 点云生成也放这里
+  pointsGeometry = new THREE.BufferGeometry();
+  pointsGeometry.setAttribute(
+    "position",
+    new THREE.Float32BufferAttribute(new Float32Array(positions), 3)
+  );
+  pointsGeometry.setAttribute(
+    "color",
+    new THREE.Float32BufferAttribute(new Float32Array(colors), 3)
+  );
 
-	} );
-	meshFolder.add( params, 'displayDepth', 1, 20, 1 ).onChange( v => {
+  const pointsMaterial = new THREE.PointsMaterial({
+    size: 0.0005,
+    vertexColors: true,
+    transparent: true,
+    opacity: 0.8,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    sizeAttenuation: true,
+  });
 
-		if ( bvhHelper ) {
+  const points = new THREE.Points(pointsGeometry, pointsMaterial);
+  scene.add(points);
+});
 
-			bvhHelper.depth = v;
-			bvhHelper.update();
-
-		}
-
-	} );
-	meshFolder.open();
-
-	window.addEventListener( 'resize', () => {
-
-		camera.aspect = window.innerWidth / window.innerHeight;
-		camera.updateProjectionMatrix();
-		renderer.setSize( window.innerWidth, window.innerHeight );
-
-	} );
-
+  const clock = new THREE.Clock()
+  renderer.setAnimationLoop(() => {
+    controls.update();
+    renderer.render(scene, camera);
+  });
+  window.addEventListener("resize", resize);
 }
 
-function addKnot() {
-
-	// const mesh = new THREE.Mesh( geometry, material );
-	// mesh.rotation.x = Math.random() * 10;
-	// mesh.rotation.y = Math.random() * 10;
-	knots.push( mesh );
-	containerObj.add( mesh );
-
-}
-
-function addRaycaster() {
-
-	const obj = new THREE.Object3D();
-	const whiteMaterial = new THREE.MeshBasicMaterial( { color: 0xffffff } );
-	const origMesh = new THREE.Mesh( sphere, whiteMaterial );
-	const hitMesh = new THREE.Mesh( sphere, whiteMaterial );
-	hitMesh.scale.setScalar( 0.25 );
-	origMesh.scale.setScalar( 0.5 );
-
-	const cylinderMesh = new THREE.Mesh( cylinder, new THREE.MeshBasicMaterial( {
-		color: 0xffffff,
-		transparent: true,
-		opacity: 0.25
-	} ) );
-	cylinderMesh.rotation.z = Math.PI / 2;
-
-	obj.add( cylinderMesh, origMesh, hitMesh );
-	scene.add( obj );
-
-	origMesh.position.set( pointDist, 0, 0 );
-	obj.rotation.x = Math.random() * 10;
-	obj.rotation.y = Math.random() * 10;
-	obj.rotation.z = Math.random() * 10;
-
-	const origVec = new THREE.Vector3();
-	const dirVec = new THREE.Vector3();
-	const xDir = Math.random() - 0.5;
-	const yDir = Math.random() - 0.5;
-	const zDir = Math.random() - 0.5;
-
-	rayCasterObjects.push( {
-		update: deltaTime => {
-
-			obj.rotation.x += xDir * 0.0001 * params.raycasterSpeed * deltaTime;
-			obj.rotation.y += yDir * 0.0001 * params.raycasterSpeed * deltaTime;
-			obj.rotation.z += zDir * 0.0001 * params.raycasterSpeed * deltaTime;
-
-			origMesh.updateMatrixWorld();
-			origVec.setFromMatrixPosition( origMesh.matrixWorld );
-			dirVec.copy( origVec ).multiplyScalar( - 1 ).normalize();
-
-			raycaster.set( origVec, dirVec );
-			const res = raycaster.intersectObject( containerObj, true );
-			const length = res.length ? res[ 0 ].distance : pointDist;
-
-			hitMesh.position.set( pointDist - length, 0, 0 );
-
-			const lineLength = res.length ? length - raycaster.near : length - raycaster.near - ( pointDist - raycaster.far );
-			cylinderMesh.position.set( pointDist - raycaster.near - ( lineLength / 2 ), 0, 0 );
-			cylinderMesh.scale.set( 1, lineLength, 1 );
-
-		},
-
-		remove: () => scene.remove( obj )
-	} );
-
-}
-
-function updateFromOptions() {
-
-	raycaster.near = params.raycasterNear;
-	raycaster.far = params.raycasterFar;
-
-	// Update raycaster count
-	while ( rayCasterObjects.length > params.raycasterCount ) {
-
-		rayCasterObjects.pop().remove();
-
-	}
-
-	while ( rayCasterObjects.length < params.raycasterCount ) {
-
-		addRaycaster();
-
-	}
-
-	if ( ! geometry ) return;
-
-	// Update bounds tree
-	if (
-		! params.useBoundsTree && geometry.boundsTree ||
-		geometry.boundsTree && params.splitStrategy !== geometry.boundsTree.splitStrategy
-	) {
-
-		geometry.disposeBoundsTree();
-
-	}
-
-	if ( params.useBoundsTree && ! geometry.boundsTree ) {
-
-		console.time( 'computing bounds tree' );
-		geometry.computeBoundsTree( {
-			maxLeafSize: 5,
-			strategy: parseFloat( params.splitStrategy ),
-		} );
-		geometry.boundsTree.splitStrategy = params.splitStrategy;
-		console.timeEnd( 'computing bounds tree' );
-
-		if ( bvhHelper ) bvhHelper.update();
-
-	}
-
-	// Update knot count
-	const oldLen = knots.length;
-	while ( knots.length > params.meshCount ) {
-
-		containerObj.remove( knots.pop() );
-
-	}
-
-	while ( knots.length < params.meshCount ) {
-		addKnot();
-	}
-
-	if ( oldLen !== knots.length ) {
-
-		const lerp = ( a, b, t ) => a + ( b - a ) * t;
-		const lerpAmt = ( knots.length - 1 ) / 299;
-		const dist = lerp( 0, 2, lerpAmt );
-		const scale = lerp( 1, 0.2, lerpAmt );
-
-		knots.forEach( c => {
-
-			c.scale.setScalar( scale );
-
-			const vec3 = new THREE.Vector3( 0, 1, 0 );
-			vec3.applyAxisAngle( new THREE.Vector3( 1, 0, 0 ), Math.PI * Math.random() );
-			vec3.applyAxisAngle( new THREE.Vector3( 0, 1, 0 ), 2 * Math.PI * Math.random() );
-			vec3.multiplyScalar( dist );
-
-			c.position.copy( vec3 );
-
-		} );
-
-	}
-
-	// Update bounds visualization
-	const shouldDisplayBounds = params.displayBVH && geometry.boundsTree;
-	if ( bvhHelper && ! shouldDisplayBounds ) {
-
-		containerObj.remove( bvhHelper );
-		bvhHelper = null;
-
-	}
-
-	if ( ! bvhHelper && shouldDisplayBounds ) {
-
-		bvhHelper = new BVHHelper( knots[ 0 ] );
-		containerObj.add( bvhHelper );
-
-	}
-
-}
-
-function render() {
-
-	stats.begin();
-
-	const currTime = window.performance.now();
-	lastFrameTime = lastFrameTime || currTime;
-	const deltaTime = currTime - lastFrameTime;
-
-	// Update GUI settings
-	if ( bvhHelper ) bvhHelper.visible = params.displayBVH;
-
-	containerObj.rotation.x += 0.0001 * params.meshSpeed * deltaTime;
-	containerObj.rotation.y += 0.0001 * params.meshSpeed * deltaTime;
-	containerObj.children.forEach( c => {
-
-		c.rotation.x += 0.0001 * params.meshSpeed * deltaTime;
-		c.rotation.y += 0.0001 * params.meshSpeed * deltaTime;
-
-	} );
-	containerObj.updateMatrixWorld();
-
-	rayCasterObjects.forEach( f => f.update( deltaTime ) );
-
-	renderer.render( scene, camera );
-
-	lastFrameTime = currTime;
-
-	stats.end();
-
+function resize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
 }
 </script>
 
 <template>
- 
+  <div ref="cont" style="width:100vw;height:100vh;"></div>
 </template>
